@@ -267,21 +267,7 @@ if "messages" not in st.session_state:
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        if message["role"] == "user":
-            st.markdown(message["content"])
-        elif message["role"] == "assistant":
-            content = message["content"]
-            if isinstance(content, dict):
-                from io import StringIO
-                import pandas as pd
-                with st.expander("Show SQL Query"):
-                    st.code(content["sql"], language="sql")
-                with st.expander("Show Tabular Output"):
-                    df = pd.read_json(StringIO(content["dataframe"]))
-                    st.dataframe(df)
-                st.markdown(content["insight"])
-            else:
-                st.markdown(content)
+        st.markdown(message["content"])
 
 # React to user input
 if secrets_are_set:
@@ -293,30 +279,12 @@ if secrets_are_set:
 
         # Generate response
         sql_query = generate_sql_query(prompt)
+        sql_result = db.run(sql_query)
+        insight = generate_insight(prompt, sql_result)
 
-        # Execute query and get DataFrame with headers
-        try:
-            with db.engine.connect() as connection:
-                df = pd.read_sql(sql_query, connection)
-        except Exception as e:
-            st.error(f"Failed to execute query: {e}")
-            df = pd.DataFrame()
-
-        # Generate insight using the string representation of the DataFrame
-        insight = generate_insight(prompt, df.to_string())
-
+        response = f"Assistant: {insight}"
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
-            with st.expander("Show SQL Query"):
-                st.code(sql_query, language="sql")
-            with st.expander("Show Tabular Output"):
-                st.dataframe(df)
             st.markdown(insight)
-
         # Add assistant response to chat history
-        full_response = {
-            "sql": sql_query,
-            "dataframe": df.to_json(),
-            "insight": insight
-        }
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+        st.session_state.messages.append({"role": "assistant", "content": insight})
