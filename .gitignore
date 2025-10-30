@@ -1,0 +1,11 @@
+# Streamlit
+streamlit.log
+.streamlit/
+jules-scratch/
+
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+*.ipynb_checkpoints
