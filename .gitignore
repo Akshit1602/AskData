@@ -9,3 +9,5 @@ __pycache__/
 .env
 venv/
 *.ipynb_checkpoints
+Shell_GenAI_Demo_Streamlit.zip
+Shell_GenAI_Demo.ipynb
