@@ -153,12 +153,32 @@ db.get_context()["table_info"] = table_info_combined
 # 6. CORE FUNCTIONS FOR QUERY AND INSIGHT GENERATION
 # --------------------------------------------------------------------------
 
-def generate_sql_query(question, top_k=50):
-    """Generates an SQL query from a natural language question using an LLM."""
+def generate_sql_query(question, history=None, top_k=50):
+    """Generates an SQL query from a natural language question using an LLM, considering conversation history."""
+
+    history_context = ""
+    if history:
+        history_context = "## Conversation History:\n"
+        for msg in history:
+            role = msg["role"]
+            content = msg["content"]
+            if role == "user":
+                history_context += f"User: {content}\n"
+            elif role == "assistant" and isinstance(content, dict):
+                sql = content.get("sql", "")
+                # Recreate sample from JSON if available to keep context manageable
+                try:
+                    df_sample = pd.read_json(StringIO(content["dataframe"])).head(5).to_string()
+                except:
+                    df_sample = "No data available."
+                history_context += f"Assistant SQL: {sql}\nAssistant Result (sample):\n{df_sample}\n"
+
     user_prompt = f"""
     You are an expert data analyst for Shell Retail (India) working with SQLite.
 
-    Here is the user question:
+    {history_context}
+
+    Here is the current user question:
     {question}
 
     Here are the details of the dataset:
@@ -186,7 +206,7 @@ def generate_sql_query(question, top_k=50):
     """
     
     response = llm.invoke([
-        ("system", "You are a Shell Retail SQLite expert. Given an input question and schema, return ONLY a syntactically correct SQLite SELECT query that follows the provided relationships and rules."),
+        ("system", "You are a Shell Retail SQLite expert. Given an input question, conversation history and schema, return ONLY a syntactically correct SQLite SELECT query that follows the provided relationships and rules. Use the history to resolve ambiguities in the current question."),
         ("human", user_prompt)
     ])
     
@@ -373,14 +393,21 @@ for message in st.session_state.messages:
 
 # Main interaction loop
 if secrets_are_set:
+    # Warning message if conversation history exceeds 5 messages
+    if len(st.session_state.messages) >= 10: # 5 turns = 10 messages (user + assistant)
+        st.warning("The conversation history is getting long. This might affect the accuracy and performance of the assistant.")
+
     if prompt := st.chat_input("What is your question?"):
         # Display user message and add to history
         st.chat_message("user").markdown(prompt)
+
+        # Capture current history before adding the new prompt
+        history = st.session_state.messages.copy()
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.spinner("Generating response..."):
-            # Generate SQL query
-            sql_query = generate_sql_query(prompt)
+            # Generate SQL query with history
+            sql_query = generate_sql_query(prompt, history=history)
             
             # Execute query using the direct sqlite3 connection
             try:
