@@ -6,3 +6,4 @@ pyarrow
 python-dotenv
 pyprojroot
 openai
+plotly
