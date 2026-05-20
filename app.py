@@ -6,6 +6,8 @@ from sqlalchemy import create_engine
 from langchain_community.utilities import SQLDatabase
 from langchain_openai import AzureChatOpenAI
 import openai
+import json
+import plotly.express as px
 from io import StringIO
 
 # --------------------------------------------------------------------------
@@ -192,6 +194,66 @@ def generate_sql_query(question, top_k=50):
     # Clean up potential markdown formatting from the LLM response
     return sql_query.replace('sql', '').replace('`', '').strip()
 
+def generate_visualization_config(question, df):
+    """Generates a list of Plotly chart configurations based on the user question and data."""
+    if df.empty:
+        return []
+
+    # Prepare a sample of the data and column types
+    data_sample = df.head(5).to_dict(orient='records')
+    column_info = df.dtypes.apply(lambda x: str(x)).to_dict()
+
+    viz_prompt = f"""
+    You are a data visualization expert. Based on the user's question and the provided data sample, suggest the most appropriate Plotly Express charts.
+
+    User Question: {question}
+
+    Data Sample (first 5 rows):
+    {data_sample}
+
+    Column Data Types:
+    {column_info}
+
+    Rules:
+    - Use ONLY the following chart types: 'line', 'bar', 'pie'.
+    - Follow these cues:
+        - Trends over time -> 'line'
+        - Comparisons between categories -> 'bar'
+        - Proportions or percentages of a total -> 'pie'
+    - Return a JSON list of objects. Each object must have:
+        - 'type': One of ['line', 'bar', 'pie']
+        - 'x': Column name for x-axis (required for line and bar)
+        - 'y': Column name for y-axis (required for line and bar)
+        - 'values': Column name for values (required for pie)
+        - 'names': Column name for labels (required for pie)
+        - 'color': Optional column name for color coding
+        - 'title': A descriptive title for the chart
+    - Stick to as few charts as possible (usually 1, maximum 2).
+    - If the data is not suitable for any of these charts (e.g., only one row and one column, or no clear categories/trends), return an empty list [].
+    - Ensure the column names used exactly match the data sample.
+    - Return ONLY the JSON list. No explanations, no markdown fences.
+    """
+
+    response = llm.invoke([
+        ("system", "You are a data visualization expert for Shell Retail. Return ONLY a JSON list of Plotly chart configurations."),
+        ("human", viz_prompt)
+    ])
+
+    try:
+        # Attempt to parse the response as JSON
+        content = response.content.strip()
+        # Remove markdown code blocks if present
+        if content.startswith("```json"):
+            content = content[7:-3].strip()
+        elif content.startswith("```"):
+            content = content[3:-3].strip()
+
+        config = json.loads(content)
+        return config if isinstance(config, list) else []
+    except Exception as e:
+        # In case of parsing error, return an empty list
+        return []
+
 def generate_insight(question, result):
     """Generates a business insight from the query result using an LLM."""
     insight_prompt = f"""
@@ -254,7 +316,30 @@ def generate_insight(question, result):
     return response.content
 
 # --------------------------------------------------------------------------
-# 7. STREAMLIT CHAT INTERFACE LOGIC
+# 7. CHART RENDERING HELPER
+# --------------------------------------------------------------------------
+
+def render_charts(configs, df):
+    """Renders Plotly charts based on the provided configurations and DataFrame."""
+    for config in configs:
+        try:
+            chart_type = config.get('type')
+            title = config.get('title', 'Chart')
+
+            if chart_type == 'line':
+                fig = px.line(df, x=config.get('x'), y=config.get('y'), color=config.get('color'), title=title)
+                st.plotly_chart(fig, use_container_width=True)
+            elif chart_type == 'bar':
+                fig = px.bar(df, x=config.get('x'), y=config.get('y'), color=config.get('color'), title=title)
+                st.plotly_chart(fig, use_container_width=True)
+            elif chart_type == 'pie':
+                fig = px.pie(df, values=config.get('values'), names=config.get('names'), title=title)
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error rendering chart: {e}")
+
+# --------------------------------------------------------------------------
+# 8. STREAMLIT CHAT INTERFACE LOGIC
 # --------------------------------------------------------------------------
 
 # Initialize chat history in session state if it doesn't exist
@@ -276,6 +361,12 @@ for message in st.session_state.messages:
                     # Recreate DataFrame from stored JSON
                     df = pd.read_json(StringIO(content["dataframe"]))
                     st.dataframe(df)
+
+                # Check for visualizations in the stored message
+                if "visualizations" in content and content["visualizations"]:
+                    with st.expander("Show Visualizations"):
+                        render_charts(content["visualizations"], df)
+
                 st.markdown(content["insight"])
             else:
                 st.markdown(content) # For simple string messages
@@ -298,6 +389,11 @@ if secrets_are_set:
                 st.error(f"Failed to execute query: {e}")
                 df = pd.DataFrame() # Ensure df is initialized on error
 
+            # Generate visualization configuration
+            viz_configs = []
+            if not df.empty:
+                viz_configs = generate_visualization_config(prompt, df)
+
             # Generate insight based on the result
             if not df.empty:
                 insight = generate_insight(prompt, df.to_string())
@@ -310,12 +406,18 @@ if secrets_are_set:
                     st.code(sql_query, language="sql")
                 with st.expander("Show Tabular Output"):
                     st.dataframe(df)
+
+                if viz_configs:
+                    with st.expander("Show Visualizations"):
+                        render_charts(viz_configs, df)
+
                 st.markdown(insight)
                 
             # Add the full assistant response to chat history
             full_response = {
                 "sql": sql_query,
                 "dataframe": df.to_json(), # Store dataframe as JSON string
-                "insight": insight
+                "insight": insight,
+                "visualizations": viz_configs
             }
             st.session_state.messages.append({"role": "assistant", "content": full_response})
