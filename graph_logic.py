@@ -80,10 +80,6 @@ def sql_node(state: GraphState, db_connection):
     retry_count = state.get("retry_count", 0)
     error = state.get("error")
 
-    # Schema info (Simplified for brevity in prompt, but should be comprehensive)
-    # I will import these from a common place or redefine them
-    # For now, let's assume they are available or passed in.
-
     # Re-using metadata
     from metadata import dim_station_column_descriptions, fact_station_column_descriptions, relationships, table_info_combined
 
@@ -260,10 +256,10 @@ def create_graph(db_connection):
     workflow = StateGraph(GraphState)
 
     workflow.add_node("orchestrator", orchestrator_node)
-    workflow.add_node("sql", lambda state: sql_node(state, db_connection))
-    workflow.add_node("viz", visualization_node)
-    workflow.add_node("insight", insight_node)
-    workflow.add_node("summarize", summarizer_node)
+    workflow.add_node("sql_agent", lambda state: sql_node(state, db_connection))
+    workflow.add_node("viz_agent", visualization_node)
+    workflow.add_node("insight_agent", insight_node)
+    workflow.add_node("summarize_agent", summarizer_node)
     workflow.add_node("ask_clarification", clarification_node)
 
     workflow.set_entry_point("orchestrator")
@@ -275,10 +271,10 @@ def create_graph(db_connection):
         "orchestrator",
         route_from_orchestrator,
         {
-            "sql": "sql",
-            "viz": "viz",
-            "insight": "insight",
-            "summarize": "summarize"
+            "sql": "sql_agent",
+            "viz": "viz_agent",
+            "insight": "insight_agent",
+            "summarize": "summarize_agent"
         }
     )
 
@@ -291,42 +287,42 @@ def create_graph(db_connection):
         return router(state)
 
     workflow.add_conditional_edges(
-        "sql",
+        "sql_agent",
         route_from_sql,
         {
-            "retry": "sql",
-            "sql": "sql",
-            "viz": "viz",
-            "insight": "insight",
-            "summarize": "summarize",
+            "retry": "sql_agent",
+            "sql": "sql_agent",
+            "viz": "viz_agent",
+            "insight": "insight_agent",
+            "summarize": "summarize_agent",
             "ask_clarification": "ask_clarification"
         }
     )
 
-    workflow.add_edge("ask_clarification", "summarize")
+    workflow.add_edge("ask_clarification", "summarize_agent")
 
     workflow.add_conditional_edges(
-        "viz",
+        "viz_agent",
         router,
         {
-            "sql": "sql",
-            "viz": "viz",
-            "insight": "insight",
-            "summarize": "summarize"
+            "sql": "sql_agent",
+            "viz": "viz_agent",
+            "insight": "insight_agent",
+            "summarize": "summarize_agent"
         }
     )
 
     workflow.add_conditional_edges(
-        "insight",
+        "insight_agent",
         router,
         {
-            "sql": "sql",
-            "viz": "viz",
-            "insight": "insight",
-            "summarize": "summarize"
+            "sql": "sql_agent",
+            "viz": "viz_agent",
+            "insight": "insight_agent",
+            "summarize": "summarize_agent"
         }
     )
 
-    workflow.add_edge("summarize", END)
+    workflow.add_edge("summarize_agent", END)
 
     return workflow.compile()
