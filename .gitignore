@@ -2,7 +2,7 @@
 streamlit.log
 .streamlit/
 jules-scratch/
-
+.vscode
 # Python
 __pycache__/
 *.pyc
