@@ -86,254 +86,23 @@ if secrets_are_set:
     )
 
 # --------------------------------------------------------------------------
-# 5. SCHEMA METADATA FOR THE LLM
+# 5. SCHEMA METADATA AND LANGGRAPH INTEGRATION
 # --------------------------------------------------------------------------
 
-# Column descriptions and relationships to provide context to the LLM
-dim_station_column_descriptions = {
-    "station_id": "Unique identifier for each Shell fuel station (e.g., BLR-001).",
-    "station_name": "Display name of the station used for business reporting.",
-    "city": "Metro/urban location where the station operates.",
-    "cluster": "Operational grouping of stations for performance management.",
-    "latitude": "Geographic latitude of the station, useful for mapping and routing.",
-    "longitude": "Geographic longitude of the station.",
-    "opened_year": "Year the station started operations, helpful for lifecycle and maturity analysis.",
-    "has_ev_charger": "Indicates if the station supports EV charging (1 = Yes, 0 = No).",
-    "cstore_size_sqft": "Size of the Shell convenience store in square feet, used for revenue potential analysis."
-}
-
-fact_station_column_descriptions = {
-    "date": "Daily date for transaction reporting in YYYY-MM-DD format.",
-    "station_id": "Unique identifier linking to dim_station for each Shell site.",
-    "city": "City-level filter for localized performance analytics.",
-    "product_family": "Fuel type sold: Petrol, Diesel, or Premium.",
-    "shell_price_inr_per_liter": "Shell retail selling price per liter in INR.",
-    "comp_min_price_inr_per_liter_within_3km": "Minimum competitor price detected within a 3km radius.",
-    "price_gap_inr_per_liter": "Pricing difference: Shell price minus competitor minimum price (positive → Shell is pricier).",
-    "liters_sold": "Total fuel volume sold for the product that day (in liters).",
-    "revenue_inr": "Total revenue generated from fuel sales in INR.",
-    "gross_margin_inr": "Gross margin earned on fuel sales for the day in INR.",
-    "downtime_minutes": "Pump/equipment downtime duration impacting sales opportunity.",
-    "stockout_flag": "Indicates if a product was unavailable for any duration (1 = Stockout, 0 = Normal).",
-    "promo_active": "Indicates whether a discount/offer/promotion was active (1 = Yes, 0 = No).",
-    "competitors_within_3km": "Number of competitor stations competing for the same catchment area.",
-    "weather_heat_index": "Approximate temperature/humidity index that influences fuel demand.",
-    "rainfall_mm": "Rainfall amount that may impact footfall and demand fluctuations.",
-    "holiday_flag": "Marks national/major holidays that drive demand changes (1 = Holiday).",
-    "footfall_estimate": "Estimated number of customers visiting the station on that day.",
-    "cstore_transactions": "Number of completed transactions in the convenience store.",
-    "cstore_revenue_inr": "Revenue generated from non-fuel C-store sales.",
-    "loyalty_signups": "Number of new enrollments into Shell loyalty programmes.",
-    "ev_charger_sessions": "Count of EV charging sessions (if facility exists)."
-}
-
-relationships = {
-    "fact_station_day_product": {
-        "station_id": {
-            "references": {
-                "table": "dim_station",
-                "column": "station_id"
-            },
-            "relationship_type": "many_to_one"
-        }
-    }
-}
+from metadata import (
+    dim_station_column_descriptions,
+    fact_station_column_descriptions,
+    relationships,
+    table_info_combined
+)
+from graph_logic import create_graph
 
 # Provide table schema information to the LangChain SQLDatabase object
-table_info_combined = (
-    "dim_station(station_id, station_name, city, cluster, latitude, longitude, opened_year, has_ev_charger, cstore_size_sqft)\n"
-    "fact_station(date, station_id, city, product_family, shell_price_inr_per_liter, "
-    "comp_min_price_inr_per_liter_within_3km, price_gap_inr_per_liter, liters_sold, revenue_inr, gross_margin_inr, "
-    "downtime_minutes, stockout_flag, promo_active, competitors_within_3km, weather_heat_index, rainfall_mm, "
-    "holiday_flag, footfall_estimate, cstore_transactions, cstore_revenue_inr, loyalty_signups, ev_charger_sessions)\n"
-)
 db.get_context()["table_info"] = table_info_combined
 
-# --------------------------------------------------------------------------
-# 6. CORE FUNCTIONS FOR QUERY AND INSIGHT GENERATION
-# --------------------------------------------------------------------------
+# Initialize the LangGraph
+app_graph = create_graph(db_connection)
 
-def generate_sql_query(question, history=None, top_k=50):
-    """Generates an SQL query from a natural language question using an LLM, considering conversation history."""
-
-    history_context = ""
-    if history:
-        history_context = "## Conversation History:\n"
-        for msg in history:
-            role = msg["role"]
-            content = msg["content"]
-            if role == "user":
-                history_context += f"User: {content}\n"
-            elif role == "assistant" and isinstance(content, dict):
-                sql = content.get("sql", "")
-                # Recreate sample from JSON if available to keep context manageable
-                try:
-                    df_sample = pd.read_json(StringIO(content["dataframe"])).head(5).to_string()
-                except:
-                    df_sample = "No data available."
-                history_context += f"Assistant SQL: {sql}\nAssistant Result (sample):\n{df_sample}\n"
-
-    user_prompt = f"""
-    You are an expert data analyst for Shell Retail (India) working with SQLite.
-
-    {history_context}
-
-    Here is the current user question:
-    {question}
-
-    Here are the details of the dataset:
-    table_name1 = 'dim_station' and column description = {dim_station_column_descriptions}
-    table_name2 = 'fact_station' and column description = {fact_station_column_descriptions}
-
-    ## Relationships:
-    Use ONLY the relationships provided here (many-to-one):
-    {relationships}
-    - fact_station.station_id → dim_station.station_id
-
-    ## Consider the relevant table info:
-    {table_info_combined}
-
-    Strict Rules:
-    - Use ONLY the tables/columns listed above. Do not invent tables or columns.
-    - Enforce ONLY the relationship defined above when joining.
-    - Dates are TEXT in 'YYYY-MM-DD'. Use SQLite date helpers when needed (e.g., DATE('now','start of month')).
-    - Return a single valid SQLite SELECT query. No comments, no explanations, no markdown fences.
-    - Use camelcase for city names.
-    - Prefer explicit column lists; avoid SELECT *.
-    - If the user asks for “Top/Bottom N,” use ORDER BY and LIMIT.
-    - Round off all numerical values to two decimal places.
-    - Unless the user specifies otherwise, LIMIT results to {top_k}.
-    """
-    
-    response = llm.invoke([
-        ("system", "You are a Shell Retail SQLite expert. Given an input question, conversation history and schema, return ONLY a syntactically correct SQLite SELECT query that follows the provided relationships and rules. Use the history to resolve ambiguities in the current question."),
-        ("human", user_prompt)
-    ])
-    
-    sql_query = response.content
-    # Clean up potential markdown formatting from the LLM response
-    return sql_query.replace('sql', '').replace('`', '').strip()
-
-def generate_visualization_config(question, df):
-    """Generates a list of Plotly chart configurations based on the user question and data."""
-    if df.empty:
-        return []
-
-    # Prepare a sample of the data and column types
-    data_sample = df.head(5).to_dict(orient='records')
-    column_info = df.dtypes.apply(lambda x: str(x)).to_dict()
-
-    viz_prompt = f"""
-    You are a data visualization expert. Based on the user's question and the provided data sample, suggest the most appropriate Plotly Express charts.
-
-    User Question: {question}
-
-    Data Sample (first 5 rows):
-    {data_sample}
-
-    Column Data Types:
-    {column_info}
-
-    Rules:
-    - Use ONLY the following chart types: 'line', 'bar', 'pie'.
-    - Follow these cues:
-        - Trends over time -> 'line'
-        - Comparisons between categories -> 'bar'
-        - Proportions or percentages of a total -> 'pie'
-    - Return a JSON list of objects. Each object must have:
-        - 'type': One of ['line', 'bar', 'pie']
-        - 'x': Column name for x-axis (required for line and bar)
-        - 'y': Column name for y-axis (required for line and bar)
-        - 'values': Column name for values (required for pie)
-        - 'names': Column name for labels (required for pie)
-        - 'color': Optional column name for color coding
-        - 'title': A descriptive title for the chart
-    - Stick to as few charts as possible (usually 1, maximum 2).
-    - If the data is not suitable for any of these charts (e.g., only one row and one column, or no clear categories/trends), return an empty list [].
-    - Ensure the column names used exactly match the data sample.
-    - Return ONLY the JSON list. No explanations, no markdown fences.
-    """
-
-    response = llm.invoke([
-        ("system", "You are a data visualization expert for Shell Retail. Return ONLY a JSON list of Plotly chart configurations."),
-        ("human", viz_prompt)
-    ])
-
-    try:
-        # Attempt to parse the response as JSON
-        content = response.content.strip()
-        # Remove markdown code blocks if present
-        if content.startswith("```json"):
-            content = content[7:-3].strip()
-        elif content.startswith("```"):
-            content = content[3:-3].strip()
-
-        config = json.loads(content)
-        return config if isinstance(config, list) else []
-    except Exception as e:
-        # In case of parsing error, return an empty list
-        return []
-
-def generate_insight(question, result):
-    """Generates a business insight from the query result using an LLM."""
-    insight_prompt = f"""
-    You are a senior Shell Retail business performance analyst.
-    Your job is to interpret SQL results and explain *why* performance is the way it is,
-    connecting data patterns to pricing, competition, sales leakage, conversion, and operational excellence.
-
-    Context:
-    - Audience: Shell Retail Operations and Cluster Leadership Teams.
-    - These insights inform business reviews and decision boards.
-    - You have deep knowledge of station operations, pricing dynamics, and KPIs.
-
-    Inputs:
-    • Business Question:
-    {question}
-
-    • SQL Output (tabular data):
-    {result}
-
-    Your Task:
-    Generate an analytical summary that answers the question comprehensively.
-    Go beyond reporting numbers — explain *why* these numbers look this way,
-    which operational or market factors may be influencing them,
-    and what specific actions Shell teams should consider next.
-
-    Guidelines:
-    1. Start with a brief snapshot of the key trend or variance.
-    2. Diagnose likely drivers across these pillars:
-       - Pricing & Competitiveness (price gap vs. nearby competition)
-       - Customer Demand (footfall, conversion, loyalty signups)
-       - Operational Efficiency (downtime, stockouts, EV charger usage)
-       - Promotional Effectiveness (active promos vs. uplift)
-       - Network Health (cluster performance, city-wise variance)
-    3. Quantify differences or gaps where possible.
-    4. End with 2–3 concrete recommendations or next steps:
-       - Pricing adjustments
-       - Promo targeting
-       - Stockout reduction
-       - EV charger optimization
-       - Uptime improvements
-
-    Rules:
-    - Be concise and structured — 3–6 bullet points total.
-    - Use the data in the result table; never speculate beyond it.
-    - Avoid technical SQL language or metadata.
-    - No generic “monitor further” statements; give specific, actionable insights.
-    - Assume readers know Shell’s business context but not raw numbers.
-
-    Output Format:
-    📊 **What’s happening**
-    📉 **Why it’s happening (drivers & root causes)**
-    🎯 **Recommended business actions**
-    """
-    response = llm.invoke(
-        [
-            ("system", "You are a data-driven business analyst skilled at diagnostic storytelling for Shell Retail leadership."),
-            ("human", insight_prompt)
-        ]
-    )
-    return response.content
 
 # --------------------------------------------------------------------------
 # 7. CHART RENDERING HELPER
@@ -365,6 +134,10 @@ def render_charts(configs, df):
 # Initialize chat history in session state if it doesn't exist
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "graph_history" not in st.session_state:
+    st.session_state.graph_history = ""
+if "last_dataframe_json" not in st.session_state:
+    st.session_state.last_dataframe_json = None
 
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
@@ -400,51 +173,63 @@ if secrets_are_set:
     if prompt := st.chat_input("What is your question?"):
         # Display user message and add to history
         st.chat_message("user").markdown(prompt)
-
-        # Capture current history before adding the new prompt
-        history = st.session_state.messages.copy()
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.spinner("Generating response..."):
-            # Generate SQL query with history
-            sql_query = generate_sql_query(prompt, history=history)
-            
-            # Execute query using the direct sqlite3 connection
-            try:
-                df = pd.read_sql_query(sql_query, db_connection)
-            except Exception as e:
-                st.error(f"Failed to execute query: {e}")
-                df = pd.DataFrame() # Ensure df is initialized on error
-
-            # Generate visualization configuration
-            viz_configs = []
-            if not df.empty:
-                viz_configs = generate_visualization_config(prompt, df)
-
-            # Generate insight based on the result
-            if not df.empty:
-                insight = generate_insight(prompt, df.to_string())
-            else:
-                insight = "The query returned no results, so no insights could be generated."
-            
-            # Display assistant response in the chat message container
-            with st.chat_message("assistant"):
-                with st.expander("Show SQL Query"):
-                    st.code(sql_query, language="sql")
-                with st.expander("Show Tabular Output"):
-                    st.dataframe(df)
-
-                if viz_configs:
-                    with st.expander("Show Visualizations"):
-                        render_charts(viz_configs, df)
-
-                st.markdown(insight)
-                
-            # Add the full assistant response to chat history
-            full_response = {
-                "sql": sql_query,
-                "dataframe": df.to_json(), # Store dataframe as JSON string
-                "insight": insight,
-                "visualizations": viz_configs
+            # Prepare initial state for LangGraph
+            initial_state = {
+                "user_question": prompt,
+                "history": st.session_state.graph_history,
+                "plan": [],
+                "current_step_index": 0,
+                "sql_query": None,
+                "dataframe_json": st.session_state.last_dataframe_json,
+                "visualizations": None,
+                "insight": None,
+                "retry_count": 0,
+                "error": None,
+                "final_output": None
             }
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+            # Invoke the graph
+            try:
+                result = app_graph.invoke(initial_state)
+                final_output = result.get("final_output", {})
+                st.session_state.graph_history = result.get("history", "")
+
+                sql_query = final_output.get("sql")
+                dataframe_json = final_output.get("dataframe")
+                if dataframe_json:
+                    st.session_state.last_dataframe_json = dataframe_json
+                viz_configs = final_output.get("visualizations", [])
+                insight = final_output.get("insight", "No insight generated.")
+
+                df = pd.DataFrame()
+                if dataframe_json:
+                    df = pd.read_json(StringIO(dataframe_json))
+
+                # Display assistant response in the chat message container
+                with st.chat_message("assistant"):
+                    if sql_query:
+                        with st.expander("Show SQL Query"):
+                            st.code(sql_query, language="sql")
+                    if not df.empty:
+                        with st.expander("Show Tabular Output"):
+                            st.dataframe(df)
+
+                    if viz_configs:
+                        with st.expander("Show Visualizations"):
+                            render_charts(viz_configs, df)
+
+                    st.markdown(insight)
+
+                # Add the full assistant response to chat history
+                full_response = {
+                    "sql": sql_query,
+                    "dataframe": dataframe_json,
+                    "insight": insight,
+                    "visualizations": viz_configs
+                }
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
+            except Exception as e:
+                st.error(f"An error occurred during graph execution: {e}")
