@@ -153,7 +153,12 @@ def visualization_node(state: GraphState):
     - For comparisons between categories -> use 'bar' chart.
     - For distributions or percentages of a total -> use 'pie' chart.
 
-    Return ONLY a JSON list of objects with: 'type', 'x', 'y', 'values', 'names', 'color', 'title'.
+    Strict Rules:
+    - Limit to ONLY ONE best fitting visual.
+    - Return ONLY a JSON list containing a single object (or an empty list if no visual is suitable).
+
+    Output:
+    Return ONLY the JSON list of objects with: 'type', 'x', 'y', 'values', 'names', 'color', 'title'.
     """
 
     response = llm.invoke([
