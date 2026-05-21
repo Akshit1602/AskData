@@ -78,7 +78,7 @@ METADATA = {
         )
     },
     "sample": {
-        "domain_context": "expert business analyst for retail campaign performance, analyzing customer behavior across different product hierarchy levels (L1, L0, Walmart)",
+        "domain_context": "expert business analyst for experimental retail campaign testing, specialized in A/B test analysis and cohort performance metrics",
         "files": [
             {
                 "path": "Sample Dataset.xlsx",
@@ -88,33 +88,33 @@ METADATA = {
             }
         ],
         "table_descriptions": {
-            "campaign_data": "Contains retail campaign performance metrics, customer counts, and sales values across different organizational levels."
+            "campaign_data": "Contains experimental testing data for retail campaigns, including metrics for Treatment and Control groups across different customer cohorts and product hierarchy levels."
         },
         "column_descriptions": {
             "campaign_data": {
-                "group_name": "The experimental group (e.g., Treatment or Control).",
-                "cohort": "The customer segment (e.g., Acquisition or Retention).",
-                "frequency": "Customer shopping frequency category.",
-                "HH_CNT": "Total Household count.",
-                "L1_HH_CNT": "Household count at Level 1 (SKU hierarchy).",
-                "L1_HH_GMV": "Gross Merchandise Value at Level 1.",
-                "L0_HH_CNT": "Household count at Level 0 (Category hierarchy).",
-                "L0_HH_GMV": "Gross Merchandise Value at Level 0.",
-                "WMT_HH_CNT": "Household count at Walmart level (Total store hierarchy).",
-                "WMT_HH_GMV": "Gross Merchandise Value at Walmart level.",
-                "New_L1": "Count of new customers at Level 1.",
-                "Repeat_L1": "Count of repeat customers at Level 1.",
-                "Reactivated_L1": "Count of reactivated customers at Level 1.",
+                "group_name": "The experimental group: 'Treatment' (received campaign) or 'Control' (baseline). Important for calculating incremental lift.",
+                "cohort": "The customer segment targeted: 'Acquisition' (newly acquired) or 'Retention' (existing customers).",
+                "frequency": "Customer shopping frequency category (e.g., how often they visit).",
+                "HH_CNT": "Total Household count in this segment.",
+                "L1_HH_CNT": "Household count at Level 1 (specific SKU/item level hierarchy).",
+                "L1_HH_GMV": "Gross Merchandise Value (Revenue) generated at Level 1.",
+                "L0_HH_CNT": "Household count at Level 0 (Category level hierarchy).",
+                "L0_HH_GMV": "Gross Merchandise Value (Revenue) at Level 0.",
+                "WMT_HH_CNT": "Household count at Walmart level (Total store/enterprise hierarchy).",
+                "WMT_HH_GMV": "Gross Merchandise Value (Revenue) at Walmart level.",
+                "New_L1": "Count of new customers who purchased at Level 1.",
+                "Repeat_L1": "Count of repeat customers who purchased at Level 1.",
+                "Reactivated_L1": "Count of reactivated (previously churned) customers who purchased at Level 1.",
                 "Orders_L1": "Total number of orders at Level 1.",
                 "Quantity_L1": "Total quantity of items sold at Level 1.",
-                "New_L0": "Count of new customers at Level 0.",
-                "Repeat_L0": "Count of repeat customers at Level 0.",
-                "Reactivated_L0": "Count of reactivated customers at Level 0.",
+                "New_L0": "Count of new customers who purchased at Level 0.",
+                "Repeat_L0": "Count of repeat customers who purchased at Level 0.",
+                "Reactivated_L0": "Count of reactivated customers who purchased at Level 0.",
                 "Orders_L0": "Total number of orders at Level 0.",
                 "Quantity_L0": "Total quantity of items sold at Level 0.",
-                "New_WMT": "Count of new customers at Walmart level.",
-                "Repeat_WMT": "Count of repeat customers at Walmart level.",
-                "Reactivated_WMT": "Count of reactivated customers at Walmart level.",
+                "New_WMT": "Count of new customers who purchased at Walmart level.",
+                "Repeat_WMT": "Count of repeat customers who purchased at Walmart level.",
+                "Reactivated_WMT": "Count of reactivated customers who purchased at Walmart level.",
                 "Orders_WMT": "Total number of orders at Walmart level.",
                 "Quantity_WMT": "Total quantity of items sold at Walmart level."
             }
@@ -127,8 +127,8 @@ METADATA = {
 }
 
 def get_active_dataset_name():
-    return os.getenv("ACTIVE_DATASET", "shell")
+    return os.getenv("ACTIVE_DATASET", "sample")
 
 def get_metadata():
     dataset_name = get_active_dataset_name()
-    return METADATA.get(dataset_name, METADATA["shell"])
+    return METADATA.get(dataset_name, METADATA["sample"])

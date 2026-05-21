@@ -201,11 +201,23 @@ def insight_node(state: GraphState):
 
     df = pd.read_json(StringIO(df_json))
 
+    # Add domain-specific context for insights
+    analysis_focus = ""
+    if "experimental" in domain_context.lower():
+        analysis_focus = """
+        When interpreting results for experimental testing:
+        - Compare 'Treatment' vs 'Control' groups.
+        - Look for incremental lift in GMV, Household Counts, or Orders.
+        - Analyze performance differences across 'Acquisition' and 'Retention' cohorts.
+        - Mention if the results suggest the campaign was successful based on the delta between groups.
+        """
+
     insight_prompt = f"""
     You are a senior {domain_context}.
     Interpret results for: {user_question}
     Data:
     {df.to_string()}
+    {analysis_focus}
 
     Provide:
     📊 What’s happening
