@@ -46,12 +46,11 @@ def orchestrator_node(state: GraphState):
     - 'insight': For generating business insights from data.
 
     Rules:
-    1. If the user asks for a new data query, the plan should be ["sql", "viz"].
-    2. If the user explicitly asks for "insight", "analysis", "explanation", "why", or "recommendations", add "insight" to the plan.
-    3. If the user asks for a change in visualization (e.g., "make it a bar chart") and data is already available in history, the plan should be ["viz"].
-    4. If the user asks a follow-up that requires new data based on previous results, the plan should be ["sql", "viz"].
-    5. If the question can be answered from existing data/history without a new SQL, skip 'sql'.
-    6. Return ONLY a JSON object with the 'plan' key (a list of agent names).
+    1. If the user asks for a new data query, the plan should be ["sql", "viz", "insight"].
+    2. If the user asks for a change in visualization (e.g., "make it a bar chart") and data is already available in history, the plan should be ["viz"].
+    3. If the user asks a follow-up that requires new data based on previous results, the plan should be ["sql", "viz", "insight"].
+    4. If the question can be answered from existing data/history without a new SQL, skip 'sql'.
+    5. Return ONLY a JSON object with the 'plan' key (a list of agent names).
 
     User Question: {user_question}
     History Summary: {history}
@@ -202,9 +201,6 @@ def insight_node(state: GraphState):
     📊 What’s happening
     📉 Why it’s happening
     🎯 Recommended business actions
-
-    Mandatory:
-    You MUST start your response with this exact sentence: "Please note: these insights are vague based on the data provided and the question asked."
     """
 
     response = llm.invoke(insight_prompt)
