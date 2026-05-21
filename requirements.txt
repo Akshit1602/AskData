@@ -7,3 +7,5 @@ python-dotenv
 pyprojroot
 openai
 plotly
+langgraph
+langchain-community
