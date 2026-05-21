@@ -148,6 +148,11 @@ def visualization_node(state: GraphState):
     Data Sample: {data_sample}
     Columns: {column_info}
 
+    Mapping Rules:
+    - For trends (e.g., over time) -> use 'line' chart.
+    - For comparisons between categories -> use 'bar' chart.
+    - For distributions or percentages of a total -> use 'pie' chart.
+
     Return ONLY a JSON list of objects with: 'type', 'x', 'y', 'values', 'names', 'color', 'title'.
     """
 
