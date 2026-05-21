@@ -43,14 +43,15 @@ def orchestrator_node(state: GraphState):
     Available agents:
     - 'sql': For generating and executing SQL queries when new data is needed.
     - 'viz': For generating visualizations from data.
-    - 'insight': For generating business insights from data.
+    - 'insight': For generating business insights, analysis, or explanations from data.
 
     Rules:
-    1. If the user asks for a new data query, the plan should be ["sql", "viz", "insight"].
+    1. If the user asks for a new data query (e.g., "What are the sales?"), the plan should be ["sql", "viz"].
     2. If the user asks for a change in visualization (e.g., "make it a bar chart") and data is already available in history, the plan should be ["viz"].
-    3. If the user asks a follow-up that requires new data based on previous results, the plan should be ["sql", "viz", "insight"].
-    4. If the question can be answered from existing data/history without a new SQL, skip 'sql'.
-    5. Return ONLY a JSON object with the 'plan' key (a list of agent names).
+    3. If the user asks for business insights, analysis, "why", "explain", or recommendations, INCLUDE 'insight' in the plan (e.g., ["sql", "viz", "insight"] if new data is needed, or just ["insight"] if data exists in history).
+    4. If the user asks a follow-up that requires new data but NOT insights, the plan should be ["sql", "viz"].
+    5. If the question can be answered from existing data/history without a new SQL, skip 'sql'.
+    6. Return ONLY a JSON object with the 'plan' key (a list of agent names).
 
     User Question: {user_question}
     History Summary: {history}
@@ -62,9 +63,9 @@ def orchestrator_node(state: GraphState):
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         plan_data = json.loads(content)
-        plan = plan_data.get("plan", ["sql", "viz", "insight"])
+        plan = plan_data.get("plan", ["sql", "viz"])
     except:
-        plan = ["sql", "viz", "insight"]
+        plan = ["sql", "viz"]
 
     return {
         "plan": plan,
@@ -221,7 +222,22 @@ def summarizer_node(state: GraphState):
     history = state.get("history", "")
     user_question = state["user_question"]
     sql = state.get("sql_query", "")
-    insight = state.get("insight", "")
+    insight = state.get("insight")
+    df_json = state.get("dataframe_json")
+
+    # If insight wasn't generated but we have data, generate a one-liner description
+    if not insight and df_json:
+        df = pd.read_json(StringIO(df_json))
+        if not df.empty:
+            desc_prompt = f"""
+            You are a helpful data assistant. Provide a one-line description of the results for the user's question.
+            User Question: {user_question}
+            Data:
+            {df.head(10).to_string()}
+
+            Return ONLY the one-line description.
+            """
+            insight = llm.invoke(desc_prompt).content.strip()
 
     prompt = f"""
     Summarize the conversation so far. Include key findings and data points.
@@ -241,7 +257,7 @@ def summarizer_node(state: GraphState):
         "sql": state.get("sql_query"),
         "dataframe": state.get("dataframe_json"),
         "visualizations": state.get("visualizations"),
-        "insight": state.get("insight")
+        "insight": insight
     }
 
     return {
