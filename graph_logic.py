@@ -32,13 +32,17 @@ def get_llm():
 
 # --- Node Functions ---
 
+from metadata import get_metadata
+
 def orchestrator_node(state: GraphState):
     llm = get_llm()
     user_question = state["user_question"]
     history = state["history"]
+    metadata = get_metadata()
+    domain_context = metadata["domain_context"]
 
     prompt = f"""
-    You are an orchestrator for a Shell Retail data assistant.
+    You are an orchestrator for a {domain_context} data assistant.
     Analyze the user's question and history to decide the execution plan.
     Available agents:
     - 'sql': For generating and executing SQL queries when new data is needed.
@@ -82,21 +86,24 @@ def sql_node(state: GraphState, db_connection):
     error = state.get("error")
 
     # Re-using metadata
-    from metadata import dim_station_column_descriptions, fact_station_column_descriptions, relationships, table_info_combined
+    metadata = get_metadata()
+    domain_context = metadata["domain_context"]
+    column_descriptions = metadata["column_descriptions"]
+    relationships = metadata["relationships"]
+    table_info_combined = metadata["table_info_combined"]
 
     error_context = f"\nPrevious attempt failed with error: {error}. Please fix the SQL." if error else ""
 
     user_prompt = f"""
-    You are an expert data analyst for Shell Retail (India) working with SQLite.
+    You are an {domain_context} working with SQLite.
     {history}
     User Question: {user_question}
     {error_context}
 
-    Tables:
-    dim_station: {dim_station_column_descriptions}
-    fact_station: {fact_station_column_descriptions}
-    Relationships: {relationships}
-    Table Info: {table_info_combined}
+    Tables and Columns:
+    {json.dumps(column_descriptions, indent=2)}
+    Relationships: {json.dumps(relationships, indent=2)}
+    Table Info (DDL-like): {table_info_combined}
 
     Rules:
     - Return ONLY valid SQLite SELECT query.
@@ -106,7 +113,7 @@ def sql_node(state: GraphState, db_connection):
     """
 
     response = llm.invoke([
-        ("system", "You are a Shell Retail SQLite expert. Return ONLY a syntactically correct SQLite SELECT query."),
+        ("system", f"You are an {domain_context} SQLite expert. Return ONLY a syntactically correct SQLite SELECT query."),
         ("human", user_prompt)
     ])
 
@@ -186,6 +193,8 @@ def insight_node(state: GraphState):
     llm = get_llm()
     user_question = state["user_question"]
     df_json = state.get("dataframe_json")
+    metadata = get_metadata()
+    domain_context = metadata["domain_context"]
 
     if not df_json:
         return {"insight": "No data available.", "current_step_index": state["current_step_index"] + 1}
@@ -193,7 +202,7 @@ def insight_node(state: GraphState):
     df = pd.read_json(StringIO(df_json))
 
     insight_prompt = f"""
-    You are a senior Shell Retail business performance analyst.
+    You are a senior {domain_context}.
     Interpret results for: {user_question}
     Data:
     {df.to_string()}

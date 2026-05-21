@@ -38,26 +38,38 @@ st.markdown("Welcome to the Shell GenAI Demo. Ask any question about your data, 
 # 3. DATABASE SETUP (Using sqlite3)
 # --------------------------------------------------------------------------
 
+from metadata import get_metadata
+
 @st.cache_resource
 def setup_database():
     """
-    Sets up an in-memory SQLite database, loads data from CSVs,
+    Sets up an in-memory SQLite database, loads data based on metadata,
     and returns the standard sqlite3 connection object.
     """
     # Setup in-memory SQLite database using the standard library
     # check_same_thread=False is required for multi-threaded access in Streamlit
     conn = sqlite3.connect(":memory:", check_same_thread=False)
 
-    # Read data from CSV files
-    shell_dim_df = pd.read_csv("Shell__dim_station__preview_.csv")
-    shell_fact_df = pd.read_csv("Shell__fact_station_day_product__preview_.csv")
+    metadata = get_metadata()
 
-    # Convert date format to be SQLite compatible
-    shell_fact_df["date"] = pd.to_datetime(shell_fact_df["date"], format="%d-%m-%Y").dt.strftime("%Y-%m-%d")
+    for file_info in metadata["files"]:
+        path = file_info["path"]
+        table_name = file_info["table"]
+        fmt = file_info["format"]
 
-    # Write DataFrames to tables using the sqlite3 connection
-    shell_dim_df.to_sql("dim_station", conn, if_exists="replace", index=False)
-    shell_fact_df.to_sql("fact_station", conn, if_exists="replace", index=False)
+        if fmt == "csv":
+            df = pd.read_csv(path)
+            if "date_col" in file_info:
+                date_col = file_info["date_col"]
+                date_format = file_info.get("date_format")
+                df[date_col] = pd.to_datetime(df[date_col], format=date_format).dt.strftime("%Y-%m-%d")
+        elif fmt == "excel":
+            sheet_name = file_info.get("sheet_name", 0)
+            df = pd.read_excel(path, sheet_name=sheet_name)
+        else:
+            continue
+
+        df.to_sql(table_name, conn, if_exists="replace", index=False)
 
     # Return the connection object
     return conn
@@ -89,16 +101,13 @@ if secrets_are_set:
 # 5. SCHEMA METADATA AND LANGGRAPH INTEGRATION
 # --------------------------------------------------------------------------
 
-from metadata import (
-    dim_station_column_descriptions,
-    fact_station_column_descriptions,
-    relationships,
-    table_info_combined
-)
+from metadata import get_metadata
 from graph_logic import create_graph
 
+metadata = get_metadata()
+
 # Provide table schema information to the LangChain SQLDatabase object
-db.get_context()["table_info"] = table_info_combined
+db.get_context()["table_info"] = metadata["table_info_combined"]
 
 # Initialize the LangGraph
 app_graph = create_graph(db_connection)
