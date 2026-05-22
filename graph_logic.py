@@ -48,10 +48,18 @@ def orchestrator_node(state: GraphState):
     structured_context = state.get("structured_context", "{}")
     metadata = get_metadata()
     domain_context = metadata["domain_context"]
+    table_info = metadata["table_info_combined"]
+    table_descriptions = metadata.get("table_descriptions", {})
 
     # --- Step 3: Automated Semantic Reset Detection ---
     reset_prompt = f"""
-    Analyze the user's question against the current conversation state.
+    Analyze the user's question against the Database Schema and current conversation state.
+
+    ### DATABASE SCHEMA:
+    {table_info}
+    {json.dumps(table_descriptions, indent=2)}
+
+    ### CONTEXT:
     Current State (JSON): {structured_context}
     User Question: {user_question}
 
@@ -79,20 +87,26 @@ def orchestrator_node(state: GraphState):
 
     prompt = f"""
     You are an orchestrator for a {domain_context} data assistant.
-    Analyze the user's question and history to decide the execution plan.
+    Analyze the user's question against the Database Schema first to decide the execution plan.
+
+    ### DATABASE SCHEMA:
+    {table_info}
+    {json.dumps(table_descriptions, indent=2)}
+
     Available agents:
-    - 'refine': To resolve references, anaphora, and ellipses in follow-up questions. MANDATORY before 'sql'.
+    - 'refine': To map user request to schema and resolve references. MANDATORY before 'sql'.
     - 'sql': For generating and executing SQL queries when new data is needed.
     - 'viz': For generating visualizations from data.
     - 'insight': For generating business insights, analysis, or explanations from data.
 
     Rules:
-    1. If the user asks for a new data query (e.g., "What are the sales?"), the plan should be ["refine", "sql", "viz"].
-    2. If the user asks for a change in visualization (e.g., "make it a bar chart") and data is already available in history, the plan should be ["viz"].
-    3. If the user asks for business insights, analysis, "why", "explain", or recommendations, INCLUDE 'insight' in the plan (e.g., ["sql", "viz", "insight"] if new data is needed, or just ["insight"] if data exists in history).
-    4. If the user asks a follow-up that requires new data but NOT insights, the plan should be ["refine", "sql", "viz"].
-    5. If the question can be answered from existing data/history without a new SQL, skip 'sql'.
-    6. Return ONLY a JSON object with the 'plan' key (a list of agent names).
+    1. ALWAYS prioritize matching the question to the Database Schema.
+    2. If the user asks for a new data query, the plan should be ["refine", "sql", "viz"].
+    3. If the user asks for a change in visualization and data is already available, the plan should be ["viz"].
+    4. If the user asks for business insights, analysis, "why", "explain", or recommendations, INCLUDE 'insight' in the plan.
+    5. If the user asks a follow-up that requires new data but NOT insights, the plan should be ["refine", "sql", "viz"].
+    6. If the question can be answered from existing data/history without a new SQL, skip 'sql'.
+    7. Return ONLY a JSON object with the 'plan' key (a list of agent names).
 
     User Question: {user_question}
     History Summary: {current_history}
@@ -117,7 +131,8 @@ def orchestrator_node(state: GraphState):
         "structured_context": current_context,
         "current_step_index": 0,
         "retry_count": 0,
-        "error": None
+        "error": None,
+        "final_output": None
     }
 
 def intent_refinement_node(state: GraphState):
@@ -128,20 +143,25 @@ def intent_refinement_node(state: GraphState):
     structured_context = state.get("structured_context", "{}")
     metadata = get_metadata()
     domain_context = metadata["domain_context"]
+    table_info = metadata["table_info_combined"]
 
     prompt = f"""
     You are a Query Refinement Expert for an {domain_context} data assistant.
-    Your task is to rewrite the user's question to be self-contained, resolving any references (it, them, those), anaphora, or ellipses based on the conversation history and state.
+    Your primary goal is to map the user's natural language request to the provided Database Schema, using the conversation history ONLY to resolve ambiguities or references.
 
-    ### CONTEXT:
-    History: {history}
+    ### DATABASE SCHEMA (Primary Source of Truth):
+    {table_info}
+
+    ### CONTEXT (Secondary):
+    History Summary: {history}
     Structured State: {structured_context}
 
     ### USER QUESTION:
     {user_question}
 
     ### INSTRUCTIONS:
-    1. Identify if the question is a follow-up or a new topic.
+    1. ALWAYS prioritize the Database Schema. If the user mentions a term, find its closest equivalent in the schema columns or tables.
+    2. Resolve any references (e.g., "it", "them", "that city", "previous group") by looking at the History and Structured State.
     2. If it's a follow-up, merge the previous constraints with the new question.
        Example:
        Turn 1: "Show sales for Bangalore"
@@ -185,45 +205,46 @@ def sql_node(state: GraphState, db_connection):
     column_descriptions = metadata["column_descriptions"]
     relationships = metadata["relationships"]
     table_info_combined = metadata["table_info_combined"]
+    table_descriptions = metadata.get("table_descriptions", {})
 
     if error:
-        system_msg = f"You are a SQL Self-Correction Expert. The previous SQL failed with error: {error}. Focus on fixing column names and join conditions."
+        system_msg = f"You are a SQL Self-Correction Expert for {domain_context}. The previous SQL failed with error: {error}. Focus on fixing column names and join conditions based on the Database Schema."
         user_prompt = f"""
+        ### DATABASE SCHEMA (Source of Truth):
+        Tables and Columns: {json.dumps(column_descriptions, indent=2)}
+        Table Info (DDL-like): {table_info_combined}
+        Table Descriptions: {json.dumps(table_descriptions, indent=2)}
+
         ### ERROR DIAGNOSTIC:
         The previous query failed.
         Error: {error}
 
         ### TASK:
-        1. Review the Schema below. Ensure every column used exists in the 'Tables and Columns' JSON.
+        1. Review the Schema above. Ensure every column used exists in the 'Tables and Columns' JSON.
         2. Check for common SQLite errors (e.g., string vs integer).
         3. Provide a CORRECTED SELECT query.
-
-        ### DATABASE SCHEMA:
-        {json.dumps(column_descriptions, indent=2)}
-        {table_info_combined}
 
         Return ONLY the corrected SQLite SELECT query.
         """
     else:
-        system_msg = f"You are an {domain_context} SQLite expert. Return ONLY a syntactically correct SQLite SELECT query."
+        system_msg = f"You are an {domain_context} SQLite expert. Your primary task is to translate natural language into SQL based on the official Database Schema."
         user_prompt = f"""
-        You are an {domain_context} working with SQLite.
-
-        ### CONTEXT FROM PREVIOUS TURNS:
-        {history}
-        Structured State: {structured_context}
-
-        ### CURRENT REQUEST:
-        User Question: {user_question}
-
-        ### DATABASE SCHEMA:
+        ### DATABASE SCHEMA (Primary Source of Truth):
         Tables and Columns:
         {json.dumps(column_descriptions, indent=2)}
         Relationships: {json.dumps(relationships, indent=2)}
         Table Info (DDL-like): {table_info_combined}
 
-        Rules:
-        - Use the 'Structured State' to resolve references like "them", "those", or "that city".
+        ### CONTEXT (Secondary):
+        History: {history}
+        Structured State: {structured_context}
+
+        ### CURRENT REQUEST:
+        User Question: {user_question}
+
+        ### INSTRUCTIONS:
+        1. ALWAYS prioritize the Database Schema over the conversation history. If there is a conflict, the Schema wins.
+        2. Use the 'Structured State' and 'History' ONLY to resolve references or to understand the user's iterative refinement of a query.
         - If the current question is a follow-up (e.g., "What about Bangalore?"), carry forward the previous metrics and constraints unless contradicted.
         - Return ONLY valid SQLite SELECT query.
         - No markdown, no comments.
@@ -252,6 +273,7 @@ def sql_node(state: GraphState, db_connection):
         }
     except Exception as e:
         logger.error(f"SQL execution failed: {str(e)}")
+        # If it failed, don't increment step index, but increment retry count
         return {
             "sql_query": sql_query,
             "error": str(e),
@@ -328,6 +350,9 @@ def insight_node(state: GraphState):
     df = pd.read_json(StringIO(df_json))
 
     # Add domain-specific context for insights
+    table_info = metadata["table_info_combined"]
+    table_descriptions = metadata.get("table_descriptions", {})
+
     analysis_focus = ""
     if "experimental" in domain_context.lower():
         analysis_focus = """
@@ -340,9 +365,18 @@ def insight_node(state: GraphState):
 
     insight_prompt = f"""
     You are a senior {domain_context}.
-    Interpret results for: {user_question}
-    Data:
+    Interpret the data results based on the User Question and the Database Schema.
+
+    ### DATABASE SCHEMA:
+    {table_info}
+    {json.dumps(table_descriptions, indent=2)}
+
+    ### USER QUESTION:
+    {user_question}
+
+    ### DATA RESULTS:
     {df.to_string()}
+
     {analysis_focus}
 
     Provide:
@@ -481,6 +515,17 @@ def router(state: GraphState):
 
 # --- Graph Construction ---
 
+def route_from_orchestrator(state: GraphState):
+    return router(state)
+
+def route_from_sql(state: GraphState):
+    if state.get("error"):
+        if state.get("retry_count", 0) <= 3:
+            return "retry"
+        else:
+            return "ask_clarification"
+    return router(state)
+
 def create_graph(db_connection):
     workflow = StateGraph(GraphState)
 
@@ -493,9 +538,6 @@ def create_graph(db_connection):
     workflow.add_node("ask_clarification", clarification_node)
 
     workflow.set_entry_point("orchestrator")
-
-    def route_from_orchestrator(state):
-        return router(state)
 
     workflow.add_conditional_edges(
         "orchestrator",
@@ -521,19 +563,12 @@ def create_graph(db_connection):
         }
     )
 
-    def route_from_sql(state):
-        if state.get("error"):
-            if state.get("retry_count", 0) <= 3: # 1 initial + 3 retries = 4 attempts
-                return "retry"
-            else:
-                return "ask_clarification"
-        return router(state)
-
     workflow.add_conditional_edges(
         "sql_agent",
         route_from_sql,
         {
             "retry": "sql_agent",
+            "refine": "intent_refinement",
             "sql": "sql_agent",
             "viz": "viz_agent",
             "insight": "insight_agent",
