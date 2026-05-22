@@ -1,11 +1,15 @@
 import os
 import json
+import logging
 import pandas as pd
 from io import StringIO
 from typing import TypedDict, List, Optional, Literal
 from langchain_openai import AzureChatOpenAI
 from langgraph.graph import StateGraph, END
 import sqlite3
+
+# Configure logging for graph_logic
+logger = logging.getLogger("shell_genai_app.graph_logic")
 
 # Define the state
 class GraphState(TypedDict):
@@ -37,6 +41,7 @@ def get_llm():
 from metadata import get_metadata
 
 def orchestrator_node(state: GraphState):
+    logger.info("Entering orchestrator_node")
     llm = get_llm()
     user_question = state["user_question"]
     history = state["history"]
@@ -58,14 +63,17 @@ def orchestrator_node(state: GraphState):
     """
 
     reset_response = llm.invoke(reset_prompt)
+    logger.info(f"Reset check response: {reset_response.content.strip()}")
     try:
         reset_content = reset_response.content.strip()
         if "```json" in reset_content:
             reset_content = reset_content.split("```json")[1].split("```")[0].strip()
         reset_action = json.loads(reset_content).get('action', 'RETAIN')
-    except:
+    except Exception as e:
+        logger.warning(f"Failed to parse reset action: {e}")
         reset_action = 'RETAIN'
 
+    logger.info(f"Reset action determined: {reset_action}")
     current_history = history if reset_action == 'RETAIN' else ""
     current_context = structured_context if reset_action == 'RETAIN' else "{}"
 
@@ -91,15 +99,18 @@ def orchestrator_node(state: GraphState):
     """
 
     response = llm.invoke(prompt)
+    logger.info(f"Orchestrator plan response: {response.content.strip()}")
     try:
         content = response.content.strip()
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         plan_data = json.loads(content)
         plan = plan_data.get("plan", ["refine", "sql", "viz"])
-    except:
+    except Exception as e:
+        logger.warning(f"Failed to parse orchestrator plan: {e}")
         plan = ["refine", "sql", "viz"]
 
+    logger.info(f"Final plan: {plan}")
     return {
         "plan": plan,
         "history": current_history,
@@ -110,6 +121,7 @@ def orchestrator_node(state: GraphState):
     }
 
 def intent_refinement_node(state: GraphState):
+    logger.info("Entering intent_refinement_node")
     llm = get_llm()
     user_question = state["user_question"]
     history = state["history"]
@@ -141,21 +153,25 @@ def intent_refinement_node(state: GraphState):
     """
 
     response = llm.invoke(prompt)
+    logger.info(f"Refinement response: {response.content.strip()}")
     try:
         content = response.content.strip()
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         refined_data = json.loads(content)
         refined_question = refined_data.get("refined_question", user_question)
-    except:
+    except Exception as e:
+        logger.warning(f"Failed to parse refined question: {e}")
         refined_question = user_question
 
+    logger.info(f"Refined question: {refined_question}")
     return {
         "refined_question": refined_question,
         "current_step_index": state["current_step_index"] + 1
     }
 
 def sql_node(state: GraphState, db_connection):
+    logger.info("Entering sql_node")
     llm = get_llm()
     user_question = state.get("refined_question") or state["user_question"]
     history = state["history"]
@@ -219,11 +235,14 @@ def sql_node(state: GraphState, db_connection):
         ("system", system_msg),
         ("human", user_prompt)
     ])
+    logger.info(f"SQL generation response: {response.content.strip()}")
 
     sql_query = response.content.replace('sql', '').replace('`', '').strip()
+    logger.info(f"Executing SQL: {sql_query}")
 
     try:
         df = pd.read_sql_query(sql_query, db_connection)
+        logger.info(f"SQL execution successful, returned {len(df)} rows.")
         return {
             "sql_query": sql_query,
             "dataframe_json": df.to_json(),
@@ -232,6 +251,7 @@ def sql_node(state: GraphState, db_connection):
             "current_step_index": state["current_step_index"] + 1
         }
     except Exception as e:
+        logger.error(f"SQL execution failed: {str(e)}")
         return {
             "sql_query": sql_query,
             "error": str(e),
@@ -239,6 +259,7 @@ def sql_node(state: GraphState, db_connection):
         }
 
 def visualization_node(state: GraphState):
+    logger.info("Entering visualization_node")
     llm = get_llm()
     user_question = state["user_question"]
     df_json = state.get("dataframe_json")
@@ -276,6 +297,7 @@ def visualization_node(state: GraphState):
         ("system", "Return ONLY a JSON list of Plotly chart configurations."),
         ("human", viz_prompt)
     ])
+    logger.info(f"Visualization response: {response.content.strip()}")
 
     try:
         content = response.content.strip()
@@ -293,6 +315,7 @@ def visualization_node(state: GraphState):
     }
 
 def insight_node(state: GraphState):
+    logger.info("Entering insight_node")
     llm = get_llm()
     user_question = state["user_question"]
     df_json = state.get("dataframe_json")
@@ -329,12 +352,14 @@ def insight_node(state: GraphState):
     """
 
     response = llm.invoke(insight_prompt)
+    logger.info(f"Insight response: {response.content.strip()[:100]}...")
     return {
         "insight": response.content,
         "current_step_index": state["current_step_index"] + 1
     }
 
 def clarification_node(state: GraphState):
+    logger.info("Entering clarification_node")
     llm = get_llm()
     metadata = get_metadata()
     table_info = metadata["table_info_combined"]
@@ -350,6 +375,7 @@ def clarification_node(state: GraphState):
     """
 
     suggestions = llm.invoke(prompt).content.strip()
+    logger.info(f"Clarification suggestions: {suggestions}")
 
     message = (
         "I'm sorry, I'm having trouble generating a valid query for your request after several attempts. "
@@ -364,6 +390,7 @@ def clarification_node(state: GraphState):
     }
 
 def summarizer_node(state: GraphState):
+    logger.info("Entering summarizer_node")
     llm = get_llm()
     history = state.get("history", "")
     structured_context = state.get("structured_context", "{}")
@@ -410,6 +437,7 @@ def summarizer_node(state: GraphState):
     """
 
     response = llm.invoke(summary_prompt)
+    logger.info(f"Summarizer response: {response.content.strip()}")
     try:
         content = response.content.strip()
         if "```json" in content:
@@ -417,7 +445,8 @@ def summarizer_node(state: GraphState):
         result = json.loads(content)
         new_history = result.get("history", history)
         new_structured_context = json.dumps(result.get("structured_context", {}))
-    except:
+    except Exception as e:
+        logger.warning(f"Failed to parse summarizer output: {e}")
         new_history = history
         new_structured_context = structured_context
 
@@ -438,13 +467,17 @@ def summarizer_node(state: GraphState):
 # --- Router Functions ---
 
 def router(state: GraphState):
+    logger.info("Entering router")
     plan = state["plan"]
     idx = state["current_step_index"]
 
     if idx >= len(plan):
+        logger.info("Plan complete, routing to summarize.")
         return "summarize"
 
-    return plan[idx]
+    next_node = plan[idx]
+    logger.info(f"Routing to next node in plan: {next_node}")
+    return next_node
 
 # --- Graph Construction ---
 

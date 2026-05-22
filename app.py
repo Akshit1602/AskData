@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 import pandas as pd
+import logging
 import sqlite3
 from sqlalchemy import create_engine
 from langchain_community.utilities import SQLDatabase
@@ -9,6 +10,20 @@ import openai
 import json
 import plotly.express as px
 from io import StringIO
+
+# --------------------------------------------------------------------------
+# 0. LOGGING CONFIGURATION
+# --------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("app.log")
+    ]
+)
+logger = logging.getLogger("shell_genai_app")
 
 # --------------------------------------------------------------------------
 # 1. ENVIRONMENT AND API CONFIGURATION
@@ -23,8 +38,10 @@ try:
     os.environ["OPENAI_DEPLOYMENT_NAME"] = st.secrets["OPENAI_DEPLOYMENT_NAME"]
     openai.api_key = os.environ.get('OPENAI_API_KEY')
     secrets_are_set = True
+    logger.info("OpenAI API secrets loaded successfully.")
 except (KeyError, FileNotFoundError):
     secrets_are_set = False
+    logger.error("OpenAI API secrets not found in st.secrets.")
     st.error("OpenAI API secrets are not configured. Please create a `.streamlit/secrets.toml` file with your credentials.")
 
 # --------------------------------------------------------------------------
@@ -46,17 +63,20 @@ def setup_database():
     Sets up an in-memory SQLite database, loads data based on metadata,
     and returns the standard sqlite3 connection object.
     """
+    logger.info("Initializing in-memory SQLite database.")
     # Setup in-memory SQLite database using the standard library
     # check_same_thread=False is required for multi-threaded access in Streamlit
     conn = sqlite3.connect(":memory:", check_same_thread=False)
 
     metadata = get_metadata()
+    logger.info(f"Loading data for dataset: {metadata.get('domain_context', 'unknown')}")
 
     for file_info in metadata["files"]:
         path = file_info["path"]
         table_name = file_info["table"]
         fmt = file_info["format"]
 
+        logger.info(f"Processing file: {path} into table: {table_name}")
         if fmt == "csv":
             df = pd.read_csv(path)
             if "date_col" in file_info:
@@ -67,10 +87,12 @@ def setup_database():
             sheet_name = file_info.get("sheet_name", 0)
             df = pd.read_excel(path, sheet_name=sheet_name)
         else:
+            logger.warning(f"Unsupported file format: {fmt}")
             continue
 
         df.to_sql(table_name, conn, if_exists="replace", index=False)
 
+    logger.info("Database setup complete.")
     # Return the connection object
     return conn
 
@@ -182,6 +204,7 @@ if secrets_are_set:
         st.warning("The conversation history is getting long. This might affect the accuracy and performance of the assistant.")
 
     if prompt := st.chat_input("What is your question?"):
+        logger.info(f"User input received: {prompt}")
         # Display user message and add to history
         st.chat_message("user").markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -206,6 +229,7 @@ if secrets_are_set:
 
             # Invoke the graph
             try:
+                logger.info("Invoking LangGraph.")
                 result = app_graph.invoke(initial_state)
                 final_output = result.get("final_output", {})
                 st.session_state.graph_history = result.get("history", "")
@@ -246,4 +270,5 @@ if secrets_are_set:
                 }
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
             except Exception as e:
+                logger.error(f"Graph execution failed: {str(e)}", exc_info=True)
                 st.error(f"An error occurred during graph execution: {e}")
