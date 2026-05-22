@@ -145,6 +145,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "graph_history" not in st.session_state:
     st.session_state.graph_history = ""
+if "structured_context" not in st.session_state:
+    st.session_state.structured_context = "{}"
 if "last_dataframe_json" not in st.session_state:
     st.session_state.last_dataframe_json = None
 
@@ -188,7 +190,9 @@ if secrets_are_set:
             # Prepare initial state for LangGraph
             initial_state = {
                 "user_question": prompt,
+                "refined_question": None,
                 "history": st.session_state.graph_history,
+                "structured_context": st.session_state.structured_context,
                 "plan": [],
                 "current_step_index": 0,
                 "sql_query": None,
@@ -205,6 +209,7 @@ if secrets_are_set:
                 result = app_graph.invoke(initial_state)
                 final_output = result.get("final_output", {})
                 st.session_state.graph_history = result.get("history", "")
+                st.session_state.structured_context = result.get("structured_context", "{}")
 
                 sql_query = final_output.get("sql")
                 dataframe_json = final_output.get("dataframe")

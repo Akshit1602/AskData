@@ -10,7 +10,9 @@ import sqlite3
 # Define the state
 class GraphState(TypedDict):
     user_question: str
+    refined_question: Optional[str]
     history: str  # Summarized history
+    structured_context: Optional[str] # JSON string of filters/entities
     plan: List[str]
     current_step_index: int
     sql_query: Optional[str]
@@ -38,27 +40,54 @@ def orchestrator_node(state: GraphState):
     llm = get_llm()
     user_question = state["user_question"]
     history = state["history"]
+    structured_context = state.get("structured_context", "{}")
     metadata = get_metadata()
     domain_context = metadata["domain_context"]
+
+    # --- Step 3: Automated Semantic Reset Detection ---
+    reset_prompt = f"""
+    Analyze the user's question against the current conversation state.
+    Current State (JSON): {structured_context}
+    User Question: {user_question}
+
+    Determine if the user wants to:
+    1. 'RETAIN': Continue the current thread or refine it.
+    2. 'RESET': Start a completely new topic or explicitly asked for a reset.
+
+    Return ONLY a JSON object with 'action' (RETAIN/RESET).
+    """
+
+    reset_response = llm.invoke(reset_prompt)
+    try:
+        reset_content = reset_response.content.strip()
+        if "```json" in reset_content:
+            reset_content = reset_content.split("```json")[1].split("```")[0].strip()
+        reset_action = json.loads(reset_content).get('action', 'RETAIN')
+    except:
+        reset_action = 'RETAIN'
+
+    current_history = history if reset_action == 'RETAIN' else ""
+    current_context = structured_context if reset_action == 'RETAIN' else "{}"
 
     prompt = f"""
     You are an orchestrator for a {domain_context} data assistant.
     Analyze the user's question and history to decide the execution plan.
     Available agents:
+    - 'refine': To resolve references, anaphora, and ellipses in follow-up questions. MANDATORY before 'sql'.
     - 'sql': For generating and executing SQL queries when new data is needed.
     - 'viz': For generating visualizations from data.
     - 'insight': For generating business insights, analysis, or explanations from data.
 
     Rules:
-    1. If the user asks for a new data query (e.g., "What are the sales?"), the plan should be ["sql", "viz"].
+    1. If the user asks for a new data query (e.g., "What are the sales?"), the plan should be ["refine", "sql", "viz"].
     2. If the user asks for a change in visualization (e.g., "make it a bar chart") and data is already available in history, the plan should be ["viz"].
     3. If the user asks for business insights, analysis, "why", "explain", or recommendations, INCLUDE 'insight' in the plan (e.g., ["sql", "viz", "insight"] if new data is needed, or just ["insight"] if data exists in history).
-    4. If the user asks a follow-up that requires new data but NOT insights, the plan should be ["sql", "viz"].
+    4. If the user asks a follow-up that requires new data but NOT insights, the plan should be ["refine", "sql", "viz"].
     5. If the question can be answered from existing data/history without a new SQL, skip 'sql'.
     6. Return ONLY a JSON object with the 'plan' key (a list of agent names).
 
     User Question: {user_question}
-    History Summary: {history}
+    History Summary: {current_history}
     """
 
     response = llm.invoke(prompt)
@@ -67,21 +96,70 @@ def orchestrator_node(state: GraphState):
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         plan_data = json.loads(content)
-        plan = plan_data.get("plan", ["sql", "viz"])
+        plan = plan_data.get("plan", ["refine", "sql", "viz"])
     except:
-        plan = ["sql", "viz"]
+        plan = ["refine", "sql", "viz"]
 
     return {
         "plan": plan,
+        "history": current_history,
+        "structured_context": current_context,
         "current_step_index": 0,
         "retry_count": 0,
         "error": None
     }
 
-def sql_node(state: GraphState, db_connection):
+def intent_refinement_node(state: GraphState):
     llm = get_llm()
     user_question = state["user_question"]
     history = state["history"]
+    structured_context = state.get("structured_context", "{}")
+    metadata = get_metadata()
+    domain_context = metadata["domain_context"]
+
+    prompt = f"""
+    You are a Query Refinement Expert for an {domain_context} data assistant.
+    Your task is to rewrite the user's question to be self-contained, resolving any references (it, them, those), anaphora, or ellipses based on the conversation history and state.
+
+    ### CONTEXT:
+    History: {history}
+    Structured State: {structured_context}
+
+    ### USER QUESTION:
+    {user_question}
+
+    ### INSTRUCTIONS:
+    1. Identify if the question is a follow-up or a new topic.
+    2. If it's a follow-up, merge the previous constraints with the new question.
+       Example:
+       Turn 1: "Show sales for Bangalore"
+       Turn 2: "What about Chennai?"
+       Refined: "Show sales for Chennai"
+    3. If the user uses pronouns (e.g., "their revenue"), resolve them to the specific entities previously mentioned.
+    4. If the question is already self-contained, return it as is.
+    5. Return ONLY a JSON object with a single key 'refined_question'.
+    """
+
+    response = llm.invoke(prompt)
+    try:
+        content = response.content.strip()
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        refined_data = json.loads(content)
+        refined_question = refined_data.get("refined_question", user_question)
+    except:
+        refined_question = user_question
+
+    return {
+        "refined_question": refined_question,
+        "current_step_index": state["current_step_index"] + 1
+    }
+
+def sql_node(state: GraphState, db_connection):
+    llm = get_llm()
+    user_question = state.get("refined_question") or state["user_question"]
+    history = state["history"]
+    structured_context = state.get("structured_context", "{}")
     retry_count = state.get("retry_count", 0)
     error = state.get("error")
 
@@ -92,28 +170,53 @@ def sql_node(state: GraphState, db_connection):
     relationships = metadata["relationships"]
     table_info_combined = metadata["table_info_combined"]
 
-    error_context = f"\nPrevious attempt failed with error: {error}. Please fix the SQL." if error else ""
+    if error:
+        system_msg = f"You are a SQL Self-Correction Expert. The previous SQL failed with error: {error}. Focus on fixing column names and join conditions."
+        user_prompt = f"""
+        ### ERROR DIAGNOSTIC:
+        The previous query failed.
+        Error: {error}
 
-    user_prompt = f"""
-    You are an {domain_context} working with SQLite.
-    {history}
-    User Question: {user_question}
-    {error_context}
+        ### TASK:
+        1. Review the Schema below. Ensure every column used exists in the 'Tables and Columns' JSON.
+        2. Check for common SQLite errors (e.g., string vs integer).
+        3. Provide a CORRECTED SELECT query.
 
-    Tables and Columns:
-    {json.dumps(column_descriptions, indent=2)}
-    Relationships: {json.dumps(relationships, indent=2)}
-    Table Info (DDL-like): {table_info_combined}
+        ### DATABASE SCHEMA:
+        {json.dumps(column_descriptions, indent=2)}
+        {table_info_combined}
 
-    Rules:
-    - Return ONLY valid SQLite SELECT query.
-    - No markdown, no comments.
-    - LIMIT results to 50 unless specified.
-    - Round numerical values to 2 decimal places.
-    """
+        Return ONLY the corrected SQLite SELECT query.
+        """
+    else:
+        system_msg = f"You are an {domain_context} SQLite expert. Return ONLY a syntactically correct SQLite SELECT query."
+        user_prompt = f"""
+        You are an {domain_context} working with SQLite.
+
+        ### CONTEXT FROM PREVIOUS TURNS:
+        {history}
+        Structured State: {structured_context}
+
+        ### CURRENT REQUEST:
+        User Question: {user_question}
+
+        ### DATABASE SCHEMA:
+        Tables and Columns:
+        {json.dumps(column_descriptions, indent=2)}
+        Relationships: {json.dumps(relationships, indent=2)}
+        Table Info (DDL-like): {table_info_combined}
+
+        Rules:
+        - Use the 'Structured State' to resolve references like "them", "those", or "that city".
+        - If the current question is a follow-up (e.g., "What about Bangalore?"), carry forward the previous metrics and constraints unless contradicted.
+        - Return ONLY valid SQLite SELECT query.
+        - No markdown, no comments.
+        - LIMIT results to 50 unless specified.
+        - Round numerical values to 2 decimal places.
+        """
 
     response = llm.invoke([
-        ("system", f"You are an {domain_context} SQLite expert. Return ONLY a syntactically correct SQLite SELECT query."),
+        ("system", system_msg),
         ("human", user_prompt)
     ])
 
@@ -232,15 +335,38 @@ def insight_node(state: GraphState):
     }
 
 def clarification_node(state: GraphState):
+    llm = get_llm()
+    metadata = get_metadata()
+    table_info = metadata["table_info_combined"]
+
+    prompt = f"""
+    The SQL assistant failed to generate a valid query for the user.
+    Based on the available tables and columns, suggest 3 sample questions the user could ask instead.
+
+    Database Schema:
+    {table_info}
+
+    Return ONLY the 3 questions as a bulleted list.
+    """
+
+    suggestions = llm.invoke(prompt).content.strip()
+
+    message = (
+        "I'm sorry, I'm having trouble generating a valid query for your request after several attempts. "
+        "Here are some alternative questions you might find useful based on the data I have:\n\n"
+        f"{suggestions}"
+    )
+
     return {
         "sql_query": None, # Clear invalid SQL
-        "insight": "I'm sorry, I'm having trouble generating a valid query for your request after several attempts. Could you please clarify your question or provide more details?",
+        "insight": message,
         "current_step_index": len(state["plan"]) # Ensure we finish after this
     }
 
 def summarizer_node(state: GraphState):
     llm = get_llm()
     history = state.get("history", "")
+    structured_context = state.get("structured_context", "{}")
     user_question = state["user_question"]
     sql = state.get("sql_query", "")
     insight = state.get("insight")
@@ -260,18 +386,40 @@ def summarizer_node(state: GraphState):
             """
             insight = llm.invoke(desc_prompt).content.strip()
 
-    prompt = f"""
-    Summarize the conversation so far. Include key findings and data points.
+    summary_prompt = f"""
+    You are a conversation state manager for a SQL assistant.
+    Analyze the new turn and update the conversation history AND the structured context.
+
     Current History: {history}
+    Current Structured Context: {structured_context}
+
     New Turn:
     User: {user_question}
     SQL: {sql}
-    Insight: {insight}
+    Result Snapshot: {insight}
 
-    Keep the summary concise but informative, prioritizing user questions and key findings.
+    Your Task:
+    1. Update the 'History' summary (concise narrative).
+    2. Update the 'StructuredContext' JSON. It must track:
+       - 'active_filters': dictionary of column-value pairs (e.g. {{"city": "Bangalore"}})
+       - 'active_metrics': list of columns user is interested in (e.g. ["revenue_inr", "liters_sold"])
+       - 'last_entities': list of specific IDs or names mentioned.
+       - 'intent': the current analytical goal (e.g. "comparing city performance")
+
+    Return ONLY a JSON object with 'history' and 'structured_context' keys.
     """
 
-    response = llm.invoke(prompt)
+    response = llm.invoke(summary_prompt)
+    try:
+        content = response.content.strip()
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        result = json.loads(content)
+        new_history = result.get("history", history)
+        new_structured_context = json.dumps(result.get("structured_context", {}))
+    except:
+        new_history = history
+        new_structured_context = structured_context
 
     # Also prepare the final output for Streamlit
     final_output = {
@@ -282,7 +430,8 @@ def summarizer_node(state: GraphState):
     }
 
     return {
-        "history": response.content,
+        "history": new_history,
+        "structured_context": new_structured_context,
         "final_output": final_output
     }
 
@@ -303,6 +452,7 @@ def create_graph(db_connection):
     workflow = StateGraph(GraphState)
 
     workflow.add_node("orchestrator", orchestrator_node)
+    workflow.add_node("intent_refinement", intent_refinement_node)
     workflow.add_node("sql_agent", lambda state: sql_node(state, db_connection))
     workflow.add_node("viz_agent", visualization_node)
     workflow.add_node("insight_agent", insight_node)
@@ -318,6 +468,19 @@ def create_graph(db_connection):
         "orchestrator",
         route_from_orchestrator,
         {
+            "refine": "intent_refinement",
+            "sql": "sql_agent",
+            "viz": "viz_agent",
+            "insight": "insight_agent",
+            "summarize": "summarize_agent"
+        }
+    )
+
+    workflow.add_conditional_edges(
+        "intent_refinement",
+        router,
+        {
+            "refine": "intent_refinement",
             "sql": "sql_agent",
             "viz": "viz_agent",
             "insight": "insight_agent",
