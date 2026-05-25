@@ -23,7 +23,7 @@ logging.basicConfig(
         logging.FileHandler("app.log")
     ]
 )
-logger = logging.getLogger("shell_genai_app")
+logger = logging.getLogger("askdata_app")
 
 # --------------------------------------------------------------------------
 # 1. ENVIRONMENT AND API CONFIGURATION
@@ -48,8 +48,8 @@ except (KeyError, FileNotFoundError):
 # 2. STREAMLIT UI SETUP
 # --------------------------------------------------------------------------
 
-st.title("Shell GenAI Demo 💬")
-st.markdown("Welcome to the Shell GenAI Demo. Ask any question about your data, and the assistant will provide insights.")
+st.title("AskData 💬")
+st.markdown("Welcome to AskData. Ask any question about your data, and the assistant will provide insights.")
 
 # --------------------------------------------------------------------------
 # 3. DATABASE SETUP (Using sqlite3)
@@ -123,7 +123,6 @@ if secrets_are_set:
 # 5. SCHEMA METADATA AND LANGGRAPH INTEGRATION
 # --------------------------------------------------------------------------
 
-from metadata import get_metadata
 from graph_logic import create_graph
 
 metadata = get_metadata()

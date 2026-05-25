@@ -9,7 +9,7 @@ from langgraph.graph import StateGraph, END
 import sqlite3
 
 # Configure logging for graph_logic
-logger = logging.getLogger("shell_genai_app.graph_logic")
+logger = logging.getLogger("askdata_app.graph_logic")
 
 # Define the state
 class GraphState(TypedDict):
