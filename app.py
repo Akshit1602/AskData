@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 import pandas as pd
+import logging
 import sqlite3
 from sqlalchemy import create_engine
 from langchain_community.utilities import SQLDatabase
@@ -9,6 +10,20 @@ import openai
 import json
 import plotly.express as px
 from io import StringIO
+
+# --------------------------------------------------------------------------
+# 0. LOGGING CONFIGURATION
+# --------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("app.log")
+    ]
+)
+logger = logging.getLogger("shell_genai_app")
 
 # --------------------------------------------------------------------------
 # 1. ENVIRONMENT AND API CONFIGURATION
@@ -23,8 +38,10 @@ try:
     os.environ["OPENAI_DEPLOYMENT_NAME"] = st.secrets["OPENAI_DEPLOYMENT_NAME"]
     openai.api_key = os.environ.get('OPENAI_API_KEY')
     secrets_are_set = True
+    logger.info("OpenAI API secrets loaded successfully.")
 except (KeyError, FileNotFoundError):
     secrets_are_set = False
+    logger.error("OpenAI API secrets not found in st.secrets.")
     st.error("OpenAI API secrets are not configured. Please create a `.streamlit/secrets.toml` file with your credentials.")
 
 # --------------------------------------------------------------------------
@@ -38,27 +55,44 @@ st.markdown("Welcome to the Shell GenAI Demo. Ask any question about your data, 
 # 3. DATABASE SETUP (Using sqlite3)
 # --------------------------------------------------------------------------
 
+from metadata import get_metadata
+
 @st.cache_resource
 def setup_database():
     """
-    Sets up an in-memory SQLite database, loads data from CSVs,
+    Sets up an in-memory SQLite database, loads data based on metadata,
     and returns the standard sqlite3 connection object.
     """
+    logger.info("Initializing in-memory SQLite database.")
     # Setup in-memory SQLite database using the standard library
     # check_same_thread=False is required for multi-threaded access in Streamlit
     conn = sqlite3.connect(":memory:", check_same_thread=False)
 
-    # Read data from CSV files
-    shell_dim_df = pd.read_csv("Shell__dim_station__preview_.csv")
-    shell_fact_df = pd.read_csv("Shell__fact_station_day_product__preview_.csv")
+    metadata = get_metadata()
+    logger.info(f"Loading data for dataset: {metadata.get('domain_context', 'unknown')}")
 
-    # Convert date format to be SQLite compatible
-    shell_fact_df["date"] = pd.to_datetime(shell_fact_df["date"], format="%d-%m-%Y").dt.strftime("%Y-%m-%d")
+    for file_info in metadata["files"]:
+        path = file_info["path"]
+        table_name = file_info["table"]
+        fmt = file_info["format"]
 
-    # Write DataFrames to tables using the sqlite3 connection
-    shell_dim_df.to_sql("dim_station", conn, if_exists="replace", index=False)
-    shell_fact_df.to_sql("fact_station", conn, if_exists="replace", index=False)
+        logger.info(f"Processing file: {path} into table: {table_name}")
+        if fmt == "csv":
+            df = pd.read_csv(path)
+            if "date_col" in file_info:
+                date_col = file_info["date_col"]
+                date_format = file_info.get("date_format")
+                df[date_col] = pd.to_datetime(df[date_col], format=date_format).dt.strftime("%Y-%m-%d")
+        elif fmt == "excel":
+            sheet_name = file_info.get("sheet_name", 0)
+            df = pd.read_excel(path, sheet_name=sheet_name)
+        else:
+            logger.warning(f"Unsupported file format: {fmt}")
+            continue
 
+        df.to_sql(table_name, conn, if_exists="replace", index=False)
+
+    logger.info("Database setup complete.")
     # Return the connection object
     return conn
 
@@ -89,16 +123,13 @@ if secrets_are_set:
 # 5. SCHEMA METADATA AND LANGGRAPH INTEGRATION
 # --------------------------------------------------------------------------
 
-from metadata import (
-    dim_station_column_descriptions,
-    fact_station_column_descriptions,
-    relationships,
-    table_info_combined
-)
+from metadata import get_metadata
 from graph_logic import create_graph
 
+metadata = get_metadata()
+
 # Provide table schema information to the LangChain SQLDatabase object
-db.get_context()["table_info"] = table_info_combined
+db.get_context()["table_info"] = metadata["table_info_combined"]
 
 # Initialize the LangGraph
 app_graph = create_graph(db_connection)
@@ -136,6 +167,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "graph_history" not in st.session_state:
     st.session_state.graph_history = ""
+if "structured_context" not in st.session_state:
+    st.session_state.structured_context = "{}"
 if "last_dataframe_json" not in st.session_state:
     st.session_state.last_dataframe_json = None
 
@@ -171,6 +204,7 @@ if secrets_are_set:
         st.warning("The conversation history is getting long. This might affect the accuracy and performance of the assistant.")
 
     if prompt := st.chat_input("What is your question?"):
+        logger.info(f"User input received: {prompt}")
         # Display user message and add to history
         st.chat_message("user").markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -179,7 +213,9 @@ if secrets_are_set:
             # Prepare initial state for LangGraph
             initial_state = {
                 "user_question": prompt,
+                "refined_question": None,
                 "history": st.session_state.graph_history,
+                "structured_context": st.session_state.structured_context,
                 "plan": [],
                 "current_step_index": 0,
                 "sql_query": None,
@@ -193,9 +229,11 @@ if secrets_are_set:
 
             # Invoke the graph
             try:
+                logger.info("Invoking LangGraph.")
                 result = app_graph.invoke(initial_state)
                 final_output = result.get("final_output", {})
                 st.session_state.graph_history = result.get("history", "")
+                st.session_state.structured_context = result.get("structured_context", "{}")
 
                 sql_query = final_output.get("sql")
                 dataframe_json = final_output.get("dataframe")
@@ -232,4 +270,5 @@ if secrets_are_set:
                 }
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
             except Exception as e:
+                logger.error(f"Graph execution failed: {str(e)}", exc_info=True)
                 st.error(f"An error occurred during graph execution: {e}")
