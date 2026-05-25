@@ -1,6 +1,39 @@
-# Shell GenAI Demo
+# AskData 💬
 
-This Streamlit application allows you to ask questions about your Shell retail data in natural language. The application uses a Large Language Model to convert your questions into SQL queries, executes them against a local SQLite database, and then generates business insights based on the results.
+AskData is a dataset-agnostic GenAI Data Assistant that allows users to query and analyze data using natural language. Built with a multi-agent architecture using LangGraph and Azure OpenAI, AskData can be easily configured to work with any structured dataset (CSV or Excel) by defining metadata.
+
+## Features
+
+- **Dataset Agnostic**: Switch between different datasets (e.g., Shell Retail, Experimental Campaigns) using a simple environment variable.
+- **Multi-Agent Orchestration**: Intelligent routing between specialized agents for query refinement, SQL generation, visualization, and business insights.
+- **Automated Semantic Reset**: Autonomously detects when a user is starting a new topic and resets conversation context accordingly.
+- **SQL Self-Correction**: Automatically retries and fixes invalid SQL queries using schema diagnostics and error logs.
+- **Intelligent Insights**: Generates deep business analysis and recommendations, with the ability to suppress insights when not explicitly requested.
+- **Dynamic Visualizations**: Automatically selects and generates the best-fitting Plotly charts (Line, Bar, Pie) based on the data.
+- **Conversation Management**: Summarizes history to maintain context and warns users when history length might impact performance.
+
+## Architecture
+
+AskData uses a sophisticated LangGraph workflow to process user questions:
+
+```mermaid
+graph TD
+    A[User Question] --> B[Orchestrator]
+    B -->|New Query| C[Intent Refinement]
+    B -->|Viz Change| E[Visualization Agent]
+    B -->|Insight Only| F[Insight Agent]
+
+    C --> D[SQL Agent]
+    D -->|Success| E
+    D -->|Error| G[SQL Self-Correction/Retry]
+    G -->|Fixed| E
+    G -->|Fail| H[Clarification Agent]
+
+    E --> F
+    F --> I[Summarizer/State Manager]
+    H --> I
+    I --> J[Final Response]
+```
 
 ## Setup
 
@@ -10,7 +43,7 @@ This Streamlit application allows you to ask questions about your Shell retail d
     ```
 
 2.  **Set up your OpenAI API credentials:**
-    This application uses Streamlit's secrets management for API keys. Create a file named `.streamlit/secrets.toml` and add your OpenAI credentials in the following format:
+    Create a file named `.streamlit/secrets.toml` and add your Azure OpenAI credentials:
     ```toml
     OPENAI_API_TYPE = "azure"
     OPENAI_API_KEY = "your_openai_api_key"
@@ -19,12 +52,26 @@ This Streamlit application allows you to ask questions about your Shell retail d
     OPENAI_DEPLOYMENT_NAME = "gpt-4o"
     ```
 
-## How to Run the Application
+## How to Run
 
-Once you have installed the dependencies and set up your API keys, you can run the Streamlit app with the following command:
+By default, the application loads the `sample` dataset. You can specify the dataset using the `ACTIVE_DATASET` environment variable:
 
 ```bash
+# Run with default (sample) dataset
 streamlit run app.py
+
+# Run with shell dataset
+ACTIVE_DATASET=shell streamlit run app.py
 ```
 
-The application will open in your web browser. You can then ask questions in the chat interface to get insights from your data.
+## Developer Guide: Adding a New Dataset
+
+To add a new dataset to AskData:
+
+1.  **Prepare Data**: Add your CSV or Excel files to the `Datasets/` directory.
+2.  **Update Metadata**: Add a new entry to the `METADATA` dictionary in `metadata.py`. You must define:
+    - `domain_context`: The persona/expertise of the assistant for this data.
+    - `files`: List of files with their paths, table names, and formats.
+    - `column_descriptions`: Descriptions for each column to help the LLM understand the data.
+    - `table_info_combined`: A DDL-style string representing the table schemas.
+3.  **Switch Dataset**: Set the `ACTIVE_DATASET` environment variable to your new dataset key when running the app.

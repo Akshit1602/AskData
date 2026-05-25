@@ -9,3 +9,4 @@ openai
 plotly
 langgraph
 langchain-community
+openpyxl

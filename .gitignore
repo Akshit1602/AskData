@@ -1,5 +1,6 @@
 # Streamlit
 streamlit.log
+app.log
 .streamlit/
 jules-scratch/
 .vscode
